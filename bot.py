@@ -7,7 +7,7 @@ import threading
 
 # ----- Bot setup -----
 intents = discord.Intents.default()
-intents.message_content = True  # Make sure this is enabled in Developer Portal
+intents.message_content = True
 bot = commands.Bot(command_prefix="/", intents=intents)
 
 # ----- Stats -----
@@ -27,11 +27,9 @@ class TicTacToeButton(ui.Button):
             return
 
         # Set mark
-        mark = "❌" if view.turn == view.player1 else "⭕"
+        mark = "❌" if view.turn == view.player1.id else "⭕"
         self.label = mark
         self.disabled = True
-
-        # Update board state
         view.board[self.row_pos][self.col_pos] = mark
 
         # Check winner
@@ -39,25 +37,36 @@ class TicTacToeButton(ui.Button):
         if winner:
             for child in view.children:
                 child.disabled = True
+
+            # Update stats for both players
+            for player_id in [view.player1.id, view.player2.id]:
+                stats[player_id] = stats.get(player_id, {"wins":0,"losses":0,"played":0})
+                stats[player_id]["played"] += 1
+
+            content = ""
             if winner == "Tie":
                 content = "It's a tie!"
             else:
-                content = f"{interaction.user.mention} won!"
-                # Update stats
-                stats[interaction.user.id] = stats.get(interaction.user.id, {"wins":0,"losses":0,"played":0})
-                stats[interaction.user.id]["wins"] += 1
+                winner_id = view.player1.id if winner == "❌" else view.player2.id
+                loser_id = view.player2.id if winner == "❌" else view.player1.id
+                stats[winner_id]["wins"] += 1
+                stats[loser_id]["losses"] += 1
+                content = f"<@{winner_id}> won!"
+
             await interaction.response.edit_message(content=content, view=view)
             return
+
         # Switch turn
-        view.turn = view.player1 if view.turn == view.player2 else view.player2
-        await interaction.response.edit_message(view=view)
+        view.turn = view.player1.id if view.turn == view.player2.id else view.player2.id
+        next_player = "<@{}>".format(view.turn)
+        await interaction.response.edit_message(view=view, content=f"{next_player}'s turn {'❌' if view.turn == view.player1.id else '⭕'}")
 
 # ----- Tic-Tac-Toe View -----
 class TicTacToeView(ui.View):
     def __init__(self, player1, player2):
         super().__init__(timeout=None)
-        self.player1 = player1.id
-        self.player2 = player2.id
+        self.player1 = player1
+        self.player2 = player2
         self.turn = player1.id
         self.board = [["" for _ in range(3)] for _ in range(3)]
         for r in range(3):
@@ -79,7 +88,6 @@ class TicTacToeView(ui.View):
         for line in lines:
             if line[0] == line[1] == line[2] != "":
                 return line[0]
-        # Check tie
         if all(all(cell != "" for cell in row) for row in b):
             return "Tie"
         return None
@@ -92,7 +100,10 @@ async def start(interaction: discord.Interaction, opponent: discord.Member):
         await interaction.response.send_message("You cannot play against bots!", ephemeral=True)
         return
     view = TicTacToeView(player1=interaction.user, player2=opponent)
-    await interaction.response.send_message(f"Tic-Tac-Toe: {interaction.user.mention} vs {opponent.mention}\n{interaction.user.mention}'s turn ❌", view=view)
+    await interaction.response.send_message(
+        f"Tic-Tac-Toe: {interaction.user.mention} vs {opponent.mention}\n{interaction.user.mention}'s turn ❌", 
+        view=view
+    )
 
 # ----- Slash command: /stats -----
 @bot.tree.command(name="stats", description="View your Tic-Tac-Toe stats")
