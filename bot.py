@@ -142,3 +142,19 @@ async def on_ready():
         print(f"Fout bij sync: {e}")
 
 bot.run(os.environ.get("DISCORD_TOKEN"))
+
+from flask import Flask
+import threading
+
+app = Flask("")
+
+@app.route("/")
+def home():
+    return "Bot is running!"
+
+def run():
+    app.run(host="0.0.0.0", port=8080)
+
+# Start Flask in een aparte thread
+threading.Thread(target=run).start()
+
