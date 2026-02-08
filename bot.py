@@ -1,7 +1,7 @@
 import os
 import discord
-from discord import app_commands
 from discord.ext import commands
+from discord import app_commands, ui
 from flask import Flask
 import threading
 
@@ -10,29 +10,89 @@ intents = discord.Intents.default()
 intents.message_content = True  # Make sure this is enabled in Developer Portal
 bot = commands.Bot(command_prefix="/", intents=intents)
 
-# ---- Tic-Tac-Toe data -----
-games = {}  # {channel_id: game_state}
+# ----- Stats -----
 stats = {}  # {user_id: {"wins":0,"losses":0,"played":0}}
 
-# ---- Tic-Tac-Toe logic -----
-def check_winner(board):
-    for line in [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]]:
-        a,b,c = line
-        if board[a] == board[b] == board[c] and board[a] != "⬜":
-            return board[a]
-    if "⬜" not in board:
-        return "Tie"
-    return None
+# ----- Tic-Tac-Toe Button -----
+class TicTacToeButton(ui.Button):
+    def __init__(self, row, col):
+        super().__init__(style=discord.ButtonStyle.secondary, label="⬜", row=row)
+        self.row_pos = row
+        self.col_pos = col
 
-def render_board(board):
-    return "".join(board[:3]) + "\n" + "".join(board[3:6]) + "\n" + "".join(board[6:9])
+    async def callback(self, interaction: discord.Interaction):
+        view: TicTacToeView = self.view
+        if interaction.user.id != view.turn:
+            await interaction.response.send_message("It's not your turn!", ephemeral=True)
+            return
+
+        # Set mark
+        mark = "❌" if view.turn == view.player1 else "⭕"
+        self.label = mark
+        self.disabled = True
+
+        # Update board state
+        view.board[self.row_pos][self.col_pos] = mark
+
+        # Check winner
+        winner = view.check_winner()
+        if winner:
+            for child in view.children:
+                child.disabled = True
+            if winner == "Tie":
+                content = "It's a tie!"
+            else:
+                content = f"{interaction.user.mention} won!"
+                # Update stats
+                stats[interaction.user.id] = stats.get(interaction.user.id, {"wins":0,"losses":0,"played":0})
+                stats[interaction.user.id]["wins"] += 1
+            await interaction.response.edit_message(content=content, view=view)
+            return
+        # Switch turn
+        view.turn = view.player1 if view.turn == view.player2 else view.player2
+        await interaction.response.edit_message(view=view)
+
+# ----- Tic-Tac-Toe View -----
+class TicTacToeView(ui.View):
+    def __init__(self, player1, player2):
+        super().__init__(timeout=None)
+        self.player1 = player1.id
+        self.player2 = player2.id
+        self.turn = player1.id
+        self.board = [["" for _ in range(3)] for _ in range(3)]
+        for r in range(3):
+            for c in range(3):
+                self.add_item(TicTacToeButton(row=r, col=c))
+
+    def check_winner(self):
+        b = self.board
+        lines = [
+            [b[0][0], b[0][1], b[0][2]],
+            [b[1][0], b[1][1], b[1][2]],
+            [b[2][0], b[2][1], b[2][2]],
+            [b[0][0], b[1][0], b[2][0]],
+            [b[0][1], b[1][1], b[2][1]],
+            [b[0][2], b[1][2], b[2][2]],
+            [b[0][0], b[1][1], b[2][2]],
+            [b[0][2], b[1][1], b[2][0]],
+        ]
+        for line in lines:
+            if line[0] == line[1] == line[2] != "":
+                return line[0]
+        # Check tie
+        if all(all(cell != "" for cell in row) for row in b):
+            return "Tie"
+        return None
 
 # ----- Slash command: /start-tictactoe -----
-@bot.tree.command(name="start-tictactoe", description="Start a Tic-Tac-Toe game")
-async def start(interaction: discord.Interaction):
-    board = ["⬜"]*9
-    games[interaction.channel_id] = {"board": board, "turn": interaction.user.id}
-    await interaction.response.send_message(f"Tic-Tac-Toe started!\n{render_board(board)}")
+@bot.tree.command(name="start-tictactoe", description="Start a Tic-Tac-Toe game with another player")
+@app_commands.describe(opponent="The player you want to challenge")
+async def start(interaction: discord.Interaction, opponent: discord.Member):
+    if opponent.bot:
+        await interaction.response.send_message("You cannot play against bots!", ephemeral=True)
+        return
+    view = TicTacToeView(player1=interaction.user, player2=opponent)
+    await interaction.response.send_message(f"Tic-Tac-Toe: {interaction.user.mention} vs {opponent.mention}\n{interaction.user.mention}'s turn ❌", view=view)
 
 # ----- Slash command: /stats -----
 @bot.tree.command(name="stats", description="View your Tic-Tac-Toe stats")
@@ -65,5 +125,4 @@ def home():
 def run():
     app.run(host="0.0.0.0", port=8080)
 
-# Start Flask in a separate thread so Render sees a port
 threading.Thread(target=run).start()
