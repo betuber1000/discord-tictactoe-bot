@@ -1,149 +1,158 @@
-import os
 import discord
 from discord.ext import commands
-from discord import app_commands, ui
-from flask import Flask
-import threading
+import json
+import random
+import os
 
-# ---------------- BOT SETUP ----------------
-intents = discord.Intents.default()
-bot = commands.Bot(command_prefix="!", intents=intents)
+# ----- CONFIG -----
+TOKEN = os.environ.get("DISCORD_TOKEN")  # Set your token in environment variables
+INTENTS = discord.Intents.default()
+INTENTS.message_content = True  # Needed for commands
 
-stats = {}
+bot = commands.Bot(command_prefix='!', intents=INTENTS)
 
-# ---------------- TICTACTOE BUTTON ----------------
-class TicTacToeButton(ui.Button):
-    def __init__(self, row, col):
-        super().__init__(style=discord.ButtonStyle.secondary, label=" ", row=row)
-        self.row_pos = row
-        self.col_pos = col
+STATS_FILE = "tictactoe_stats.json"
 
-    async def callback(self, interaction: discord.Interaction):
-        view: TicTacToeView = self.view
+# Load stats
+if os.path.exists(STATS_FILE):
+    with open(STATS_FILE, "r") as f:
+        stats = json.load(f)
+else:
+    stats = {}
 
-        if interaction.user.id != view.turn:
-            await interaction.response.send_message("Not your turn.", ephemeral=True)
-            return
+# ----- HELPERS -----
+def save_stats():
+    with open(STATS_FILE, "w") as f:
+        json.dump(stats, f, indent=4)
 
-        mark = "❌" if view.turn == view.player1.id else "⭕"
-        self.label = mark
-        self.disabled = True
-        view.board[self.row_pos][self.col_pos] = mark
+def check_winner(board):
+    # Rows, cols, diagonals
+    lines = [
+        board[0:3], board[3:6], board[6:9],        # Rows
+        board[0:9:3], board[1:9:3], board[2:9:3],  # Cols
+        board[0:9:4], board[2:7:2]                  # Diags
+    ]
+    for line in lines:
+        if line[0] == line[1] == line[2] and line[0] != "⬜":
+            return line[0]
+    if "⬜" not in board:
+        return "Tie"
+    return None
 
-        winner = view.check_winner()
+def board_to_string(board):
+    return "".join(board)
 
-        if winner:
-            for child in view.children:
-                child.disabled = True
+def ai_move(board):
+    empty = [i for i, x in enumerate(board) if x == "⬜"]
+    return random.choice(empty) if empty else None
 
-            for pid in [view.player1.id, view.player2.id]:
-                stats[pid] = stats.get(pid, {"wins": 0, "losses": 0, "played": 0})
-                stats[pid]["played"] += 1
+# ----- COMMANDS -----
+@bot.command(name="start")
+async def start(ctx, opponent: discord.Member = None):
+    board = ["⬜"] * 9
+    player_symbols = {}
+    player_symbols[ctx.author.id] = "❌"
 
-            if winner == "Tie":
-                msg = "It's a tie!"
-            else:
-                win_id = view.player1.id if winner == "❌" else view.player2.id
-                lose_id = view.player2.id if winner == "❌" else view.player1.id
-                stats[win_id]["wins"] += 1
-                stats[lose_id]["losses"] += 1
-                msg = f"<@{win_id}> won! 🎉"
+    if opponent:
+        player_symbols[opponent.id] = "⭕"
+        await ctx.send(f"Tic Tac Toe started: {ctx.author.mention} vs {opponent.mention}")
+    else:
+        # Play vs AI
+        player_symbols["AI"] = "⭕"
+        await ctx.send(f"Tic Tac Toe started: {ctx.author.mention} vs AI")
 
-            await interaction.response.edit_message(content=msg, view=view)
-            return
-
-        view.turn = view.player1.id if view.turn == view.player2.id else view.player2.id
-        symbol = "❌" if view.turn == view.player1.id else "⭕"
-
-        await interaction.response.edit_message(
-            content=f"<@{view.turn}>'s turn {symbol}",
-            view=view
+    game_message = await ctx.send(
+        embed=discord.Embed(
+            title="Tic Tac Toe",
+            description="".join(board[i] for i in range(9)),
+            color=discord.Color.blue()
         )
+    )
 
+    # Save game state in message
+    bot.games = getattr(bot, "games", {})
+    bot.games[game_message.id] = {
+        "board": board,
+        "players": player_symbols,
+        "turn": ctx.author.id
+    }
 
-# ---------------- VIEW ----------------
-class TicTacToeView(ui.View):
-    def __init__(self, p1, p2):
-        super().__init__(timeout=None)
-        self.player1 = p1
-        self.player2 = p2
-        self.turn = p1.id
-        self.board = [["" for _ in range(3)] for _ in range(3)]
-
-        for r in range(3):
-            for c in range(3):
-                self.add_item(TicTacToeButton(r, c))
-
-    def check_winner(self):
-        b = self.board
-        lines = [
-            [b[0][0], b[0][1], b[0][2]],
-            [b[1][0], b[1][1], b[1][2]],
-            [b[2][0], b[2][1], b[2][2]],
-            [b[0][0], b[1][0], b[2][0]],
-            [b[0][1], b[1][1], b[2][1]],
-            [b[0][2], b[1][2], b[2][2]],
-            [b[0][0], b[1][1], b[2][2]],
-            [b[0][2], b[1][1], b[2][0]],
-        ]
-
-        for line in lines:
-            if line[0] == line[1] == line[2] != "":
-                return line[0]
-
-        if all(all(cell != "" for cell in row) for row in b):
-            return "Tie"
-
-        return None
-
-
-# ---------------- SLASH COMMANDS ----------------
-@bot.tree.command(name="start-tictactoe", description="Play TicTacToe")
-@app_commands.describe(opponent="Who do you want to play against?")
-async def start(interaction: discord.Interaction, opponent: discord.Member):
-    if opponent.bot:
-        await interaction.response.send_message("You can't play vs bots.", ephemeral=True)
+@bot.command(name="move")
+async def move(ctx, position: int):
+    game = None
+    for g in getattr(bot, "games", {}).values():
+        if ctx.author.id in g["players"]:
+            game = g
+            break
+    if not game:
+        await ctx.send("You are not in a game!")
         return
 
-    view = TicTacToeView(interaction.user, opponent)
+    board = game["board"]
+    turn = game["turn"]
 
-    await interaction.response.send_message(
-        f"{interaction.user.mention} vs {opponent.mention}\n"
-        f"{interaction.user.mention}'s turn ❌",
-        view=view
-    )
+    if ctx.author.id != turn:
+        await ctx.send("It's not your turn!")
+        return
 
+    if board[position-1] != "⬜":
+        await ctx.send("This spot is already taken!")
+        return
 
-@bot.tree.command(name="stats", description="See your stats")
-async def stats_cmd(interaction: discord.Interaction):
-    data = stats.get(interaction.user.id, {"wins": 0, "losses": 0, "played": 0})
+    board[position-1] = game["players"][ctx.author.id]
 
-    await interaction.response.send_message(
-        f"Wins: {data['wins']}\nLosses: {data['losses']}\nPlayed: {data['played']}"
-    )
+    winner = check_winner(board)
+    embed = discord.Embed(title="Tic Tac Toe", description="".join(board), color=discord.Color.green())
+    await ctx.send(embed=embed)
 
+    if winner:
+        if winner == "Tie":
+            await ctx.send("It's a tie!")
+        elif winner == "❌":
+            await ctx.send(f"{ctx.author.mention} wins!")
+            stats[str(ctx.author.id)] = stats.get(str(ctx.author.id), 0) + 1
+        elif winner == "⭕":
+            await ctx.send("⭕ wins!")
+        save_stats()
+        del bot.games[next(iter(bot.games))]
+        return
 
-# ---------------- READY ----------------
+    # Switch turn
+    if "AI" in game["players"]:
+        ai_pos = ai_move(board)
+        board[ai_pos] = "⭕"
+        winner = check_winner(board)
+        embed = discord.Embed(title="Tic Tac Toe", description="".join(board), color=discord.Color.red())
+        await ctx.send(embed=embed)
+        if winner:
+            if winner == "Tie":
+                await ctx.send("It's a tie!")
+            else:
+                await ctx.send("AI wins!")
+            del bot.games[next(iter(bot.games))]
+            return
+    else:
+        for player_id in game["players"]:
+            if player_id != turn:
+                game["turn"] = player_id
+                break
+
+@bot.command(name="leaderboard")
+async def leaderboard(ctx):
+    if not stats:
+        await ctx.send("No stats yet!")
+        return
+    sorted_stats = sorted(stats.items(), key=lambda x: x[1], reverse=True)
+    description = ""
+    for i, (user_id, wins) in enumerate(sorted_stats[:10], 1):
+        user = await bot.fetch_user(int(user_id))
+        description += f"{i}. {user.name} - {wins} wins\n"
+    embed = discord.Embed(title="Tic Tac Toe Leaderboard", description=description, color=discord.Color.gold())
+    await ctx.send(embed=embed)
+
 @bot.event
 async def on_ready():
-    print(f"Logged in as {bot.user}")
-    await bot.tree.sync()
-    print("Slash commands synced")
+    print(f"Bot is online as {bot.user}")
 
-
-# ---------------- FLASK (FOR RENDER FREE) ----------------
-app = Flask(__name__)
-
-@app.route("/")
-def home():
-    return "Bot is alive!"
-
-
-def run_web():
-    app.run(host="0.0.0.0", port=8080)
-
-
-threading.Thread(target=run_web).start()
-
-# 🔥 BOT IN MAIN THREAD (IMPORTANT)
-bot.run(os.environ["DISCORD_TOKEN"])
+# ----- RUN BOT -----
+bot.run(TOKEN)
