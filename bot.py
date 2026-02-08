@@ -155,6 +155,6 @@ def home():
 def run():
     app.run(host="0.0.0.0", port=8080)
 
-# Start Flask in een aparte thread
+# Start Flask in een aparte thread zodat Render een open poort detecteert
 threading.Thread(target=run).start()
 
